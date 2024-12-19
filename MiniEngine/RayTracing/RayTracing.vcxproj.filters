@@ -1,0 +1,104 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{06dcf987-d5c3-489b-aa0a-88d547a323d5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="HeaderFiles">
+      <UniqueIdentifier>{74f99163-a6ac-473a-935e-ebcf0fd40fd0}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="pch.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="pch.h" />
+    <ClInclude Include="DXSampleHelper.h">
+      <Filter>HeaderFiles</Filter>
+    </ClInclude>
+    <ClInclude Include="Shaders\RayTracing_Compat.h">
+      <Filter>Shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="DXRaytracingHelper.h">
+      <Filter>HeaderFiles</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="Logo.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Logo44.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="SmallLogo.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="SplashScreen.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="StoreLogo.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="WideLogo.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Resources\cornell_box_textured\ColorMapWithOpacityAlpha512.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Resources\cornell_box_textured\GlowMapWithReflectionAlpha512.png">
+      <Filter>Resource Files</Filter>
+    </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+    <None Include="Resources\cornell_box_textured\barrel.bin">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\barrel.gltf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\bunny2.bin">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\bunny2.gltf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\closesthit.rchit">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\cornell.bin">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\cornell.gltf">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\miss.rmiss">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\raygen.rgen">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\README.md">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="Resources\cornell_box_textured\shadow.rmiss">
+      <Filter>Resource Files</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Shaders\RayTracing.hlsl">
+      <Filter>Shaders</Filter>
+    </FxCompile>
+  </ItemGroup>
+</Project>
