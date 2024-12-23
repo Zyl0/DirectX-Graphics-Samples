@@ -12,11 +12,19 @@
 #ifndef RAYTRACING_HLSL
 #define RAYTRACING_HLSL
 
+#define HLSL
 #include "RayTracing_Compat.h"
 
+// Input data
 RaytracingAccelerationStructure Scene : register(t0, space0);
-RWTexture2D<float4> RenderTarget : register(u0);
-ConstantBuffer<RayGenConstantBuffer> g_rayGenCB : register(b0);
+ByteAddressBuffer Indices :             register(t1, space0);
+StructuredBuffer<Vertex> Vertices :     register(t1, space0);
+
+// Outputs
+RWTexture2D<float4> RenderTarget :      register(u0);
+
+// Constants Buffers
+ConstantBuffer<SceneConstantBuffer> g_rayGenCB : register(b0);
 
 typedef BuiltInTriangleIntersectionAttributes MyAttributes;
 struct RayPayload

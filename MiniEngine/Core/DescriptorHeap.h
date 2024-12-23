@@ -101,12 +101,12 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE m_GpuHandle;
 };
 
-class DescriptorHeap
+class RTBufferDescriptorHeap
 {
 public:
 
-    DescriptorHeap(void) {}
-    ~DescriptorHeap(void) { Destroy(); }
+    RTBufferDescriptorHeap(void) {}
+    ~RTBufferDescriptorHeap(void) { Destroy(); }
 
     void Create( const std::wstring& DebugHeapName, D3D12_DESCRIPTOR_HEAP_TYPE Type, uint32_t MaxCount );
     void Destroy(void) { m_Heap = nullptr; }

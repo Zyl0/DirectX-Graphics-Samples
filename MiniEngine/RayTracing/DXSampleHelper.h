@@ -12,6 +12,8 @@
 #pragma once
 #include <stdexcept>
 
+#include <d3d12.h>
+
 // Note that while ComPtr is used to manage the lifetime of resources on the CPU,
 // it has no understanding of the lifetime of resources on the GPU. Apps must account
 // for the GPU lifetime of resources to avoid destroying objects that may still be
@@ -41,6 +43,7 @@ inline void ThrowIfFailed(HRESULT hr)
     if (FAILED(hr))
     {
         throw HrException(hr);
+        //throw HrException(ID3D12DeviceVtbl::GetDeviceRemovedReason(g_Device));
     }
 }
 

@@ -29,8 +29,8 @@ using namespace Math;
 
 namespace Renderer
 {
-    extern DescriptorHeap s_TextureHeap;
-    extern DescriptorHeap s_SamplerHeap;
+    extern RTBufferDescriptorHeap s_TextureHeap;
+    extern RTBufferDescriptorHeap s_SamplerHeap;
 }
 
 ModelH3D::ModelH3D()

@@ -26,7 +26,7 @@
 
 class GraphicsPSO;
 class RootSignature;
-class DescriptorHeap;
+class RTBufferDescriptorHeap;
 class ShadowCamera;
 class ShadowBuffer;
 struct GlobalConstants;
@@ -41,8 +41,8 @@ namespace Renderer
 
     extern std::vector<GraphicsPSO> sm_PSOs;
     extern RootSignature m_RootSig;
-    extern DescriptorHeap s_TextureHeap;
-    extern DescriptorHeap s_SamplerHeap;
+    extern RTBufferDescriptorHeap s_TextureHeap;
+    extern RTBufferDescriptorHeap s_SamplerHeap;
     extern DescriptorHandle m_CommonTextures;
 
     enum RootBindings

@@ -54,8 +54,8 @@ namespace Renderer
 
     bool s_Initialized = false;
 
-    DescriptorHeap s_TextureHeap;
-    DescriptorHeap s_SamplerHeap;
+    RTBufferDescriptorHeap s_TextureHeap;
+    RTBufferDescriptorHeap s_SamplerHeap;
     std::vector<GraphicsPSO> sm_PSOs;
 
     TextureRef s_RadianceCubeMap;

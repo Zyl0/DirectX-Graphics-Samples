@@ -67,7 +67,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE DescriptorAllocator::Allocate( uint32_t Count )
 // DescriptorHeap implementation
 //
 
-void DescriptorHeap::Create( const std::wstring& Name, D3D12_DESCRIPTOR_HEAP_TYPE Type, uint32_t MaxCount )
+void RTBufferDescriptorHeap::Create( const std::wstring& Name, D3D12_DESCRIPTOR_HEAP_TYPE Type, uint32_t MaxCount )
 {
     m_HeapDesc.Type = Type;
     m_HeapDesc.NumDescriptors = MaxCount;
@@ -90,7 +90,7 @@ void DescriptorHeap::Create( const std::wstring& Name, D3D12_DESCRIPTOR_HEAP_TYP
     m_NextFreeHandle = m_FirstHandle;
 }
 
-DescriptorHandle DescriptorHeap::Alloc( uint32_t Count )
+DescriptorHandle RTBufferDescriptorHeap::Alloc( uint32_t Count )
 {
     ASSERT(HasAvailableSpace(Count), "Descriptor Heap out of space.  Increase heap size.");
     DescriptorHandle ret = m_NextFreeHandle;
@@ -99,7 +99,7 @@ DescriptorHandle DescriptorHeap::Alloc( uint32_t Count )
     return ret;
 }
 
-bool DescriptorHeap::ValidateHandle( const DescriptorHandle& DHandle ) const
+bool RTBufferDescriptorHeap::ValidateHandle( const DescriptorHandle& DHandle ) const
 {
     if (DHandle.GetCpuPtr() < m_FirstHandle.GetCpuPtr() ||
         DHandle.GetCpuPtr() >= m_FirstHandle.GetCpuPtr() + m_HeapDesc.NumDescriptors * m_DescriptorSize)

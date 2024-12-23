@@ -110,6 +110,8 @@ struct RTRootSignatures
         enum Value {
             OutputViewSlot = 0,
             AccelerationStructureSlot,
+            IndexBufferSlot,
+            VertexBufferSlot,
             Count
         };
     };
@@ -121,15 +123,19 @@ struct RTRootSignatures
         };
     };
 
-    RTRootSignatures(RayGenConstantBuffer& RayGenCB)
+    RTRootSignatures(SceneConstantBuffer& RayGenCB)
     {
         // Global Root Signature
         {
             CD3DX12_DESCRIPTOR_RANGE UAVDescriptor;
             UAVDescriptor.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+
             CD3DX12_ROOT_PARAMETER rootParameters[GlobalRootSignatureParams::Count];
             rootParameters[GlobalRootSignatureParams::OutputViewSlot].InitAsDescriptorTable(1, &UAVDescriptor);
             rootParameters[GlobalRootSignatureParams::AccelerationStructureSlot].InitAsShaderResourceView(0);
+            rootParameters[GlobalRootSignatureParams::IndexBufferSlot].InitAsShaderResourceView(1, 0);
+            rootParameters[GlobalRootSignatureParams::VertexBufferSlot].InitAsShaderResourceView(2, 0);
+
             CD3DX12_ROOT_SIGNATURE_DESC globalRootSignatureDesc(ARRAYSIZE(rootParameters), rootParameters);
             SerializeAndCreateRaytracingRootSignature(globalRootSignatureDesc, &m_raytracingGlobalRootSignature);
         }
@@ -138,6 +144,7 @@ struct RTRootSignatures
         {
             CD3DX12_ROOT_PARAMETER rootParameters[LocalRootSignatureParams::Count];
             rootParameters[LocalRootSignatureParams::ViewportConstantSlot].InitAsConstants(SizeOfInUint32(RayGenCB), 0, 0);
+
             CD3DX12_ROOT_SIGNATURE_DESC localRootSignatureDesc(ARRAYSIZE(rootParameters), rootParameters);
             localRootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
             SerializeAndCreateRaytracingRootSignature(localRootSignatureDesc, &m_raytracingLocalRootSignature);
@@ -276,44 +283,220 @@ struct RTPipelineState
     CD3DX12_RAYTRACING_PIPELINE_CONFIG_SUBOBJECT* RTPipelineConfig = nullptr;
 };
 
+
+// Allocate a heap for a single descriptor:
+// 1 - raytracing output texture UAV
+struct RTBuffersDescriptorHeap
+{
+    // todo replace with RTBufferDescriptorHeap from mini engine
+
+    RTBuffersDescriptorHeap(UINT DescriptorCount = 1) : m_descriptorCount(DescriptorCount)
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {};
+        descriptorHeapDesc.NumDescriptors = DescriptorCount;
+        descriptorHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        descriptorHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        descriptorHeapDesc.NodeMask = 0;
+        g_Device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&m_descriptorHeap));
+        NAME_D3D12_OBJECT(m_descriptorHeap);
+
+        m_descriptorSize = g_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+    ~RTBuffersDescriptorHeap()
+    {
+        m_descriptorHeap.Reset();
+    }
+
+    UINT AllocateDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE* cpuDescriptor, UINT descriptorIndexToUse = UINT_MAX)
+    {
+        auto descriptorHeapCpuBase = m_descriptorHeap->GetCPUDescriptorHandleForHeapStart();
+        if (descriptorIndexToUse >= m_descriptorHeap->GetDesc().NumDescriptors)
+        {
+            descriptorIndexToUse = m_descriptorsAllocated++;
+        }
+        *cpuDescriptor = CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeapCpuBase, descriptorIndexToUse, m_descriptorSize);
+        return descriptorIndexToUse;
+    }
+
+    ComPtr<ID3D12DescriptorHeap> m_descriptorHeap;
+    UINT m_descriptorsAllocated = 0;
+    UINT m_descriptorSize;
+    UINT m_descriptorCount;
+};
+
+
 struct SceneGeometry
 {
     // todo use real mesh and paramters
 
     typedef UINT16 Index;
-    struct Vertex { float v1, v2, v3; };
+    using Vertex = Vertex;
 
-    SceneGeometry()
+    enum Preset
     {
-        Index indices[] =
+        HelloWorld = 0,
+        Cube
+    };
+
+    SceneGeometry(RTBuffersDescriptorHeap& HeapDesciptor, Preset preset = Preset::HelloWorld)
+    {
+        Index* Indices = nullptr;
+        size_t IndicesSize = 0;
+        SceneGeometry::Vertex* Vertices = nullptr ;
+        size_t VerticesSize = 0;
+        size_t FaceVertexCount = 0;
+
+        switch (preset)
+        {
+        case SceneGeometry::HelloWorld:
+            GetHelloWorldData(Indices, IndicesSize, Vertices, VerticesSize, FaceVertexCount);
+            break;
+        case SceneGeometry::Cube:
+            GetCubeData(Indices, IndicesSize, Vertices, VerticesSize, FaceVertexCount);
+            break;
+        default:
+            break;
+        }
+
+        m_FaceVertexCount = FaceVertexCount;
+        
+        AllocateUploadBuffer(g_Device, Vertices, VerticesSize, &m_vertexBuffer.resource);
+        AllocateUploadBuffer(g_Device, Indices, IndicesSize, &m_indexBuffer.resource);
+
+        UINT descriptorIndexIB = CreateBufferSRV(HeapDesciptor, &m_indexBuffer, IndicesSize / 4, 0);
+        UINT descriptorIndexVB = CreateBufferSRV(HeapDesciptor, &m_vertexBuffer, VerticesSize, sizeof(SceneGeometry::Vertex));
+        ThrowIfFalse(descriptorIndexVB == descriptorIndexIB + 1, L"Vertex Buffer descriptor index must follow that of Index Buffer descriptor index!");
+    }
+
+    struct D3DBuffer
+    {
+        ~D3DBuffer()
+        {
+            if (resource.Get() == nullptr) return;
+
+            resource.Reset();
+        }
+
+        ComPtr<ID3D12Resource> resource;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptorHandle;
+        D3D12_GPU_DESCRIPTOR_HANDLE gpuDescriptorHandle;
+    };
+    D3DBuffer m_indexBuffer;
+    D3DBuffer m_vertexBuffer;
+
+    size_t m_FaceVertexCount = 0;
+
+private:
+    void GetHelloWorldData(Index*& Indices, size_t& IndicesSize, SceneGeometry::Vertex*& Vertices, size_t& VerticesSize, size_t& FaceVertexCount)
+    {
+        static constexpr float depthValue = 0.5;
+        static constexpr float offset = 0.002f;
+        static Index indices[] =
         {
             0, 1, 2
         };
-
-        const float depthValue = 1.0;
-        const float offset = 0.7f;
-        Vertex vertices[] =
+        static SceneGeometry::Vertex vertices[] =
         {
-            // The sample raytraces in screen space coordinates.
-            // Since DirectX screen space coordinates are right handed (i.e. Y axis points down).
-            // Define the vertices in counter clockwise order ~ clockwise in left handed.
-            { 0, -offset, depthValue },
-            { -offset, offset, depthValue },
-            { offset, offset, depthValue }
+            { Vector3(0, -offset, depthValue),          Vector3(0,0,1) },
+            { Vector3(-offset, offset, depthValue),     Vector3(0,0,1) },
+            { Vector3(offset, offset, depthValue),      Vector3(0,0,1) }
         };
 
-        AllocateUploadBuffer(g_Device, vertices, sizeof(vertices), &m_vertexBuffer);
-        AllocateUploadBuffer(g_Device, indices, sizeof(indices), &m_indexBuffer);
+        Indices = indices;
+        IndicesSize = sizeof(indices);
+        Vertices = vertices;
+        VerticesSize = sizeof(vertices);
+        FaceVertexCount = 3;
     }
 
-    ~SceneGeometry()
+    void GetCubeData(Index*& Indices, size_t& IndicesSize, SceneGeometry::Vertex*& Vertices, size_t& VerticesSize, size_t& FaceVertexCount)
     {
-        m_indexBuffer.Reset();
-        m_vertexBuffer.Reset();
+        static constexpr float depthValue = 0.5;
+        static constexpr float offset = 0.002f;
+        static Index indices[] =
+        {
+            3,1,0,
+            2,1,3,
+
+            6,4,5,
+            7,4,6,
+
+            11,9,8,
+            10,9,11,
+
+            14,12,13,
+            15,12,14,
+
+            19,17,16,
+            18,17,19,
+
+            22,20,21,
+            23,20,22
+        };
+        static SceneGeometry::Vertex vertices[] =
+        {
+            { XMFLOAT3(-1.0f, 1.0f, -1.0f),     XMFLOAT3(0.0f, 1.0f, 0.0f) },
+            { XMFLOAT3(1.0f, 1.0f, -1.0f),      XMFLOAT3(0.0f, 1.0f, 0.0f) },
+            { XMFLOAT3(1.0f, 1.0f, 1.0f),       XMFLOAT3(0.0f, 1.0f, 0.0f) },
+            { XMFLOAT3(-1.0f, 1.0f, 1.0f),      XMFLOAT3(0.0f, 1.0f, 0.0f) },
+
+            { XMFLOAT3(-1.0f, -1.0f, -1.0f),    XMFLOAT3(0.0f, -1.0f, 0.0f) },
+            { XMFLOAT3(1.0f, -1.0f, -1.0f),     XMFLOAT3(0.0f, -1.0f, 0.0f) },
+            { XMFLOAT3(1.0f, -1.0f, 1.0f),      XMFLOAT3(0.0f, -1.0f, 0.0f) },
+            { XMFLOAT3(-1.0f, -1.0f, 1.0f),     XMFLOAT3(0.0f, -1.0f, 0.0f) },
+
+            { XMFLOAT3(-1.0f, -1.0f, 1.0f),     XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+            { XMFLOAT3(-1.0f, -1.0f, -1.0f),    XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+            { XMFLOAT3(-1.0f, 1.0f, -1.0f),     XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+            { XMFLOAT3(-1.0f, 1.0f, 1.0f),      XMFLOAT3(-1.0f, 0.0f, 0.0f) },
+
+            { XMFLOAT3(1.0f, -1.0f, 1.0f),      XMFLOAT3(1.0f, 0.0f, 0.0f) },
+            { XMFLOAT3(1.0f, -1.0f, -1.0f),     XMFLOAT3(1.0f, 0.0f, 0.0f) },
+            { XMFLOAT3(1.0f, 1.0f, -1.0f),      XMFLOAT3(1.0f, 0.0f, 0.0f) },
+            { XMFLOAT3(1.0f, 1.0f, 1.0f),       XMFLOAT3(1.0f, 0.0f, 0.0f) },
+
+            { XMFLOAT3(-1.0f, -1.0f, -1.0f),    XMFLOAT3(0.0f, 0.0f, -1.0f) },
+            { XMFLOAT3(1.0f, -1.0f, -1.0f),     XMFLOAT3(0.0f, 0.0f, -1.0f) },
+            { XMFLOAT3(1.0f, 1.0f, -1.0f),      XMFLOAT3(0.0f, 0.0f, -1.0f) },
+            { XMFLOAT3(-1.0f, 1.0f, -1.0f),     XMFLOAT3(0.0f, 0.0f, -1.0f) },
+
+            { XMFLOAT3(-1.0f, -1.0f, 1.0f),     XMFLOAT3(0.0f, 0.0f, 1.0f) },
+            { XMFLOAT3(1.0f, -1.0f, 1.0f),      XMFLOAT3(0.0f, 0.0f, 1.0f) },
+            { XMFLOAT3(1.0f, 1.0f, 1.0f),       XMFLOAT3(0.0f, 0.0f, 1.0f) },
+            { XMFLOAT3(-1.0f, 1.0f, 1.0f),      XMFLOAT3(0.0f, 0.0f, 1.0f) },
+        };
+
+        Indices = indices;
+        IndicesSize = sizeof(indices);
+        Vertices = vertices;
+        VerticesSize = sizeof(vertices);
+        FaceVertexCount = 3;
     }
 
-    ComPtr<ID3D12Resource> m_indexBuffer;
-    ComPtr<ID3D12Resource> m_vertexBuffer;
+    UINT CreateBufferSRV(RTBuffersDescriptorHeap& HeapDesciptor, D3DBuffer* buffer, UINT numElements, UINT elementSize)
+    {
+        // SRV
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Buffer.NumElements = numElements;
+        if (elementSize == 0)
+        {
+            srvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+            srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+            srvDesc.Buffer.StructureByteStride = 0;
+        }
+        else
+        {
+            srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+            srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+            srvDesc.Buffer.StructureByteStride = elementSize;
+        }
+        UINT descriptorIndex = HeapDesciptor.AllocateDescriptor(&(buffer->cpuDescriptorHandle));
+        g_Device->CreateShaderResourceView(buffer->resource.Get(), &srvDesc, buffer->cpuDescriptorHandle);
+        buffer->gpuDescriptorHandle = CD3DX12_GPU_DESCRIPTOR_HANDLE(HeapDesciptor.m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(), descriptorIndex, HeapDesciptor.m_descriptorSize);
+        return descriptorIndex;
+    }
 };
 
 //Acceleration structures needed for raytracing.
@@ -323,13 +506,13 @@ struct RTAccelerationSturctures
     {
         D3D12_RAYTRACING_GEOMETRY_DESC geometryDesc = {};
         geometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-        geometryDesc.Triangles.IndexBuffer = Geometry.m_indexBuffer->GetGPUVirtualAddress();
-        geometryDesc.Triangles.IndexCount = static_cast<UINT>(Geometry.m_indexBuffer->GetDesc().Width) / sizeof(SceneGeometry::Index);
+        geometryDesc.Triangles.IndexBuffer = Geometry.m_indexBuffer.resource->GetGPUVirtualAddress();
+        geometryDesc.Triangles.IndexCount = static_cast<UINT>(Geometry.m_indexBuffer.resource->GetDesc().Width) / sizeof(SceneGeometry::Index);
         geometryDesc.Triangles.IndexFormat = DXGI_FORMAT_R16_UINT;
         geometryDesc.Triangles.Transform3x4 = 0;
         geometryDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-        geometryDesc.Triangles.VertexCount = static_cast<UINT>(Geometry.m_vertexBuffer->GetDesc().Width) / sizeof(SceneGeometry::Vertex);
-        geometryDesc.Triangles.VertexBuffer.StartAddress = Geometry.m_vertexBuffer->GetGPUVirtualAddress();
+        geometryDesc.Triangles.VertexCount = static_cast<UINT>(Geometry.m_vertexBuffer.resource->GetDesc().Width) / sizeof(SceneGeometry::Vertex);
+        geometryDesc.Triangles.VertexBuffer.StartAddress = Geometry.m_vertexBuffer.resource->GetGPUVirtualAddress();
         geometryDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(SceneGeometry::Vertex);
 
         // todo move to SceneGeometry param
@@ -428,7 +611,22 @@ struct RTAccelerationSturctures
 
 struct RTShaderTables
 {
-    RTShaderTables(RTPipelineState& PipelineState, const RayGenConstantBuffer& RayGenCB)
+    struct NoParams {};
+
+    using RayGenParameters = NoParams;
+    static constexpr bool HasRayGenParameters = !std::is_same<NoParams, RayGenParameters>::value;
+
+    using RayHitParameters = NoParams;
+    static constexpr bool HasRayHitParameters = !std::is_same<NoParams, RayHitParameters>::value;
+
+    using RayMissParameters = NoParams;
+    static constexpr bool HasRayMissParameters = !std::is_same<NoParams, RayMissParameters>::value;
+
+    RTShaderTables(
+        RTPipelineState& PipelineState, 
+        const RayGenParameters& RayGenCB =      RayGenParameters(), 
+        const RayHitParameters& RayHitCB =      RayHitParameters(),
+        const RayMissParameters& RayMissCB =    RayMissParameters())
     {
         void* rayGenShaderIdentifier;
         void* missShaderIdentifier;
@@ -449,15 +647,24 @@ struct RTShaderTables
 
         // Ray gen shader table
         {
-            struct RootArguments {
-                RayGenConstantBuffer cb;
-            } rootArguments;
-            rootArguments.cb = RayGenCB;
-
             UINT numShaderRecords = 1;
-            UINT shaderRecordSize = shaderIdentifierSize + sizeof(rootArguments);
+            UINT shaderRecordSize = shaderIdentifierSize ;
+            if (HasRayGenParameters)
+            {
+                shaderRecordSize += sizeof(RayGenParameters);
+            }
+
             ShaderTable rayGenShaderTable(g_Device, numShaderRecords, shaderRecordSize, L"RayGenShaderTable");
-            rayGenShaderTable.push_back(ShaderRecord(rayGenShaderIdentifier, shaderIdentifierSize, &rootArguments, sizeof(rootArguments)));
+            if (HasRayGenParameters)
+            {
+                RayGenParameters rootArguments = RayGenCB;
+                rayGenShaderTable.push_back(ShaderRecord(rayGenShaderIdentifier, shaderIdentifierSize, &rootArguments, sizeof(RayGenParameters)));
+            }
+            else
+            {
+                rayGenShaderTable.push_back(ShaderRecord(rayGenShaderIdentifier, shaderIdentifierSize));
+            }
+            
             m_rayGenShaderTable = rayGenShaderTable.GetResource();
         }
 
@@ -465,8 +672,22 @@ struct RTShaderTables
         {
             UINT numShaderRecords = 1;
             UINT shaderRecordSize = shaderIdentifierSize;
+            if (HasRayMissParameters)
+            {
+                shaderRecordSize += sizeof(RayMissParameters);
+            }
+
             ShaderTable missShaderTable(g_Device, numShaderRecords, shaderRecordSize, L"MissShaderTable");
-            missShaderTable.push_back(ShaderRecord(missShaderIdentifier, shaderIdentifierSize));
+            if (HasRayMissParameters)
+            {
+                RayMissParameters rootArguments = RayMissCB;
+                missShaderTable.push_back(ShaderRecord(missShaderIdentifier, shaderIdentifierSize, &rootArguments, sizeof(RayMissParameters)));
+            }
+            else
+            {
+                missShaderTable.push_back(ShaderRecord(missShaderIdentifier, shaderIdentifierSize));
+            }
+
             m_missShaderTable = missShaderTable.GetResource();
         }
 
@@ -474,8 +695,22 @@ struct RTShaderTables
         {
             UINT numShaderRecords = 1;
             UINT shaderRecordSize = shaderIdentifierSize;
+            if (HasRayMissParameters)
+            {
+                shaderRecordSize += sizeof(RayHitParameters);
+            }
+
             ShaderTable hitGroupShaderTable(g_Device, numShaderRecords, shaderRecordSize, L"HitGroupShaderTable");
-            hitGroupShaderTable.push_back(ShaderRecord(hitGroupShaderIdentifier, shaderIdentifierSize));
+            if (HasRayMissParameters)
+            {
+                RayHitParameters rootArguments = RayHitCB;
+                hitGroupShaderTable.push_back(ShaderRecord(hitGroupShaderIdentifier, shaderIdentifierSize, &rootArguments, sizeof(RayHitParameters)));
+            }
+            else
+            {
+                hitGroupShaderTable.push_back(ShaderRecord(hitGroupShaderIdentifier, shaderIdentifierSize));
+            }
+
             m_hitGroupShaderTable = hitGroupShaderTable.GetResource();
         }
     }
@@ -492,48 +727,61 @@ struct RTShaderTables
     ComPtr<ID3D12Resource> m_rayGenShaderTable;
 };
 
+struct RTSceneConstantBuffer
+{
+    // Raw buffer structure, cannot exceed D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT size (IE 256 byte)
+    using Buffer = SceneConstantBuffer;
+
+    // We'll allocate space for several of these and they will need to be padded for alignment.
+    static_assert(sizeof(Buffer) <= D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, "Scene buffer structure is too big.");
+
+    struct AlignedBuffer
+    {
+        Buffer constants;
+        uint8_t alignmentPadding[D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - sizeof(Buffer)];
+    };
+
+    RTSceneConstantBuffer()
+    {
+        // Create the constant buffer memory and map the CPU and GPU addresses
+        const D3D12_HEAP_PROPERTIES uploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+
+        // Allocate one constant buffer per frame, since it gets updated every frame.
+        size_t cbSize = sizeof(AlignedBuffer);
+        const D3D12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(cbSize);
+
+        ThrowIfFailed(g_Device->CreateCommittedResource(
+            &uploadHeapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &constantBufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_Constants)));
+
+        // Map the constant buffer and cache its heap pointers.
+        // We don't unmap this until the app closes. Keeping buffer mapped for the lifetime of the resource is okay.
+        CD3DX12_RANGE readRange(0, 0);        // We do not intend to read from this resource on the CPU.
+        ThrowIfFailed(m_Constants->Map(0, nullptr, reinterpret_cast<void**>(&m_mappedConstantData)));
+    }
+
+    ~RTSceneConstantBuffer()
+    {
+        m_Constants->Unmap(0, nullptr);
+        m_Constants.Reset();
+        
+        // todo see if needed
+        //delete m_mappedConstantData;
+    }
+
+    AlignedBuffer* m_mappedConstantData;
+    ComPtr<ID3D12Resource> m_Constants;
+};
+
 struct RTOutputBuffer
 {
     // todo see if a preimplemented buffer from the Mini Engine could do the job
 
-    struct DescriptorHeap
-    {
-        DescriptorHeap()
-        {
-            D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {};
-            // Allocate a heap for a single descriptor:
-            // 1 - raytracing output texture UAV
-            descriptorHeapDesc.NumDescriptors = 1;
-            descriptorHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-            descriptorHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-            descriptorHeapDesc.NodeMask = 0;
-            g_Device->CreateDescriptorHeap(&descriptorHeapDesc, IID_PPV_ARGS(&m_descriptorHeap));
-            NAME_D3D12_OBJECT(m_descriptorHeap);
-
-            m_descriptorSize = g_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        }
-        ~DescriptorHeap()
-        {
-            m_descriptorHeap.Reset();
-        }
-
-        UINT AllocateDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE* cpuDescriptor, UINT descriptorIndexToUse)
-        {
-            auto descriptorHeapCpuBase = m_descriptorHeap->GetCPUDescriptorHandleForHeapStart();
-            if (descriptorIndexToUse >= m_descriptorHeap->GetDesc().NumDescriptors)
-            {
-                descriptorIndexToUse = m_descriptorsAllocated++;
-            }
-            *cpuDescriptor = CD3DX12_CPU_DESCRIPTOR_HANDLE(descriptorHeapCpuBase, descriptorIndexToUse, m_descriptorSize);
-            return descriptorIndexToUse;
-        }
-
-        ComPtr<ID3D12DescriptorHeap> m_descriptorHeap;
-        UINT m_descriptorsAllocated = 0;
-        UINT m_descriptorSize;
-    };
-
-    RTOutputBuffer(UINT width, UINT height, DescriptorHeap& Heap)
+    RTOutputBuffer(UINT width, UINT height, RTBuffersDescriptorHeap& Heap)
     {
         // Create the output resource. The dimensions and format should match the swap-chain.
         auto uavDesc = CD3DX12_RESOURCE_DESC::Tex2D(Config::c_BackBufferFormat, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -594,16 +842,16 @@ private:
 
     RTShaderTables* m_rtShaderTables = nullptr;
 
-    RTOutputBuffer::DescriptorHeap* m_rtBufferDescriptorHeap = nullptr;
+    RTBuffersDescriptorHeap* m_rtBufferDescriptorHeap = nullptr;
+
+    RTSceneConstantBuffer* m_rtSceneConstantBuffer = nullptr;
 
     RTOutputBuffer* m_rtOutputBuffer = nullptr;
 
-    RayGenConstantBuffer m_RayGenCB;
+    SceneConstantBuffer m_RayGenCB;
 };
 
 CREATE_APPLICATION( RayTracing )
-
-
 
 void RayTracing::Startup( void )
 {
@@ -622,12 +870,17 @@ void RayTracing::Startup( void )
     m_rtRootSignatures = new RTRootSignatures(m_RayGenCB);
     m_rtPipelineStateObject = new RTPipelineState(*m_dxr, *m_rtRootSignatures);
 
-    m_rtScene = new SceneGeometry();
+    // Allocate a heap for 3 descriptors:
+    // 2 - vertex and index buffer SRVs
+    // 1 - raytracing output texture SRV
+    m_rtBufferDescriptorHeap = new RTBuffersDescriptorHeap(3);
+
+    m_rtScene = new SceneGeometry(*m_rtBufferDescriptorHeap);
     m_rtAccelerationStructures = new RTAccelerationSturctures(*m_rtScene, *m_dxr);
 
-    m_rtShaderTables = new RTShaderTables(*m_rtPipelineStateObject, m_RayGenCB);
+    m_rtShaderTables = new RTShaderTables(*m_rtPipelineStateObject);
 
-    m_rtBufferDescriptorHeap = new RTOutputBuffer::DescriptorHeap();
+    m_rtSceneConstantBuffer = new RTSceneConstantBuffer();
     m_rtOutputBuffer = new RTOutputBuffer(g_SceneColorBuffer.GetWidth(), g_SceneColorBuffer.GetHeight(), *m_rtBufferDescriptorHeap);
 
 }
@@ -661,6 +914,7 @@ void RayTracing::RenderScene( void )
     gfxContext.SetRenderTarget(g_SceneColorBuffer.GetRTV());
     gfxContext.SetViewportAndScissor(0, 0, g_SceneColorBuffer.GetWidth(), g_SceneColorBuffer.GetHeight());
 
+    // Dispatch rays draw call execution
     auto DispatchRays = [&](auto* commandList, auto* stateObject, auto* dispatchDesc)
     {
         // Since each shader table has only one shader record, the stride is same as the size.
@@ -675,9 +929,11 @@ void RayTracing::RenderScene( void )
         dispatchDesc->RayGenerationShaderRecord.StartAddress = m_rtShaderTables->m_rayGenShaderTable->GetGPUVirtualAddress();
         dispatchDesc->RayGenerationShaderRecord.SizeInBytes = m_rtShaderTables->m_rayGenShaderTable->GetDesc().Width;
 
+
         dispatchDesc->Width = g_SceneColorBuffer.GetWidth();
         dispatchDesc->Height = g_SceneColorBuffer.GetHeight();
         dispatchDesc->Depth = 1;
+
         commandList->SetPipelineState1(stateObject);
         commandList->DispatchRays(dispatchDesc);
     };
@@ -687,13 +943,18 @@ void RayTracing::RenderScene( void )
 
     CommandList->SetComputeRootSignature(m_rtRootSignatures->m_raytracingGlobalRootSignature.Get());
 
-    // Bind the heaps, acceleration structure and dispatch rays.    
+    // Bind the heaps, buffers, acceleration structure and dispatch rays.    
     D3D12_DISPATCH_RAYS_DESC dispatchDesc = {};
     CommandList->SetDescriptorHeaps(1, m_rtBufferDescriptorHeap->m_descriptorHeap.GetAddressOf());
     CommandList->SetComputeRootDescriptorTable(RTRootSignatures::GlobalRootSignatureParams::OutputViewSlot, m_rtOutputBuffer-> m_raytracingOutputResourceUAVGpuDescriptor);
+    CommandList->SetComputeRootDescriptorTable(RTRootSignatures::GlobalRootSignatureParams::IndexBufferSlot, m_rtScene->m_indexBuffer.gpuDescriptorHandle);
+    CommandList->SetComputeRootDescriptorTable(RTRootSignatures::GlobalRootSignatureParams::VertexBufferSlot, m_rtScene->m_vertexBuffer.gpuDescriptorHandle);
     CommandList->SetComputeRootShaderResourceView(RTRootSignatures::GlobalRootSignatureParams::AccelerationStructureSlot, m_rtAccelerationStructures->m_topLevelAccelerationStructure->GetGPUVirtualAddress());
+
+    // Dispatch rays draw call
     DispatchRays(DxrCommandList.Get(), m_rtPipelineStateObject->m_dxrStateObject.Get(), &dispatchDesc);
 
+    // Copy result to back buffer
     D3D12_RESOURCE_BARRIER preCopyBarriers[2];
     preCopyBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(g_SceneColorBuffer.GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
     preCopyBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_rtOutputBuffer->m_raytracingOutput.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
