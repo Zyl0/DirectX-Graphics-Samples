@@ -14,6 +14,12 @@
 
 #include <d3d12.h>
 
+#include "GraphicsCore.h"
+#include <utility>
+#include <string>
+#include <sstream>
+
+
 // Note that while ComPtr is used to manage the lifetime of resources on the CPU,
 // it has no understanding of the lifetime of resources on the GPU. Apps must account
 // for the GPU lifetime of resources to avoid destroying objects that may still be
@@ -38,14 +44,118 @@ private:
 
 #define SAFE_RELEASE(p) if (p) (p)->Release()
 
-inline void ThrowIfFailed(HRESULT hr)
+#pragma optimize( "", off)
+#ifdef _DEBUG
+static size_t DebugMessageIndex = 0;
+
+void DumpDebugMessages()
+{
+    ID3D12InfoQueue* pInfoQueue = nullptr;
+    if (SUCCEEDED(Graphics::g_Device->QueryInterface(MY_IID_PPV_ARGS(&pInfoQueue))))
+    {
+        for (size_t i = DebugMessageIndex, MessageCount = pInfoQueue->GetNumStoredMessages(); i < MessageCount; i++)
+        {
+            std::wstringstream wstr;
+            wstr << L"Message from Debug Queue: ";
+
+            //D3D12MESSAGE
+            D3D12_MESSAGE Message;
+            size_t MessageSize;
+            if (FAILED(pInfoQueue->GetMessageW(i, &Message, &MessageSize)))
+            {
+                wstr << L"Cound not read debug message " << i << "\n";
+                OutputDebugStringW(wstr.str().c_str());
+                continue;
+            }
+
+            switch (Message.Severity)
+            {
+            case D3D12_MESSAGE_SEVERITY_CORRUPTION:     wstr << "[CORRUPTION]"; break;
+            case D3D12_MESSAGE_SEVERITY_ERROR:          wstr << "[ERROR]"; break;
+            case D3D12_MESSAGE_SEVERITY_WARNING:        wstr << "[WARNING]"; break;
+            case D3D12_MESSAGE_SEVERITY_INFO:           wstr << "[INFO]"; break;
+            case D3D12_MESSAGE_SEVERITY_MESSAGE:        wstr << "[MESSAGE]"; break;
+            }
+
+            switch (Message.Category)
+            {
+            case D3D12_MESSAGE_CATEGORY_APPLICATION_DEFINED:           wstr << " [APPLICATION_DEFINED] "; break;
+            case D3D12_MESSAGE_CATEGORY_MISCELLANEOUS:                 wstr << " [MISCELLANEOUS] "; break;
+            case D3D12_MESSAGE_CATEGORY_INITIALIZATION:                wstr << " [INITIALIZATION] "; break;
+            case D3D12_MESSAGE_CATEGORY_CLEANUP:                       wstr << " [CLEANUP] "; break;
+            case D3D12_MESSAGE_CATEGORY_COMPILATION:                   wstr << " [COMPILATION] "; break;
+            case D3D12_MESSAGE_CATEGORY_STATE_CREATION:                wstr << " [STATE_CREATION] "; break;
+            case D3D12_MESSAGE_CATEGORY_STATE_SETTING:                 wstr << " [STATE_SETTING] "; break;
+            case D3D12_MESSAGE_CATEGORY_STATE_GETTING:                 wstr << " [STATE_GETTING] "; break;
+            case D3D12_MESSAGE_CATEGORY_RESOURCE_MANIPULATION:         wstr << " [RESOURCE_MANIPULATION] "; break;
+            case D3D12_MESSAGE_CATEGORY_EXECUTION:                     wstr << " [EXECUTION] "; break;
+            case D3D12_MESSAGE_CATEGORY_SHADER:                        wstr << " [SHADER] "; break;
+            }
+
+            wstr << "ID (" << Message.ID << ") ";
+
+            wstr << std::string(Message.pDescription, Message.DescriptionByteLength).c_str();
+
+            //wstr << Message.pDescription;
+
+            //Message.pDescription;
+            //Message.DescriptionByteLength;
+            wstr << "\n";
+
+            OutputDebugStringW(wstr.str().c_str());
+        }
+
+
+        DebugMessageIndex = pInfoQueue->GetNumStoredMessages();
+        pInfoQueue->Release();
+    }
+}
+#endif // _DEBUG
+
+void ThrowIfFailed(HRESULT hr)
 {
     if (FAILED(hr))
     {
-        throw HrException(hr);
+        //if (static_cast<UINT>(hr) == 0x887a0005)
+        //    throw HrException(Graphics::g_Device->GetDeviceRemovedReason());
+        //HrException exept = HrException(hr);
+        //exept.
+        //throw std::move(exept);
         //throw HrException(ID3D12DeviceVtbl::GetDeviceRemovedReason(g_Device));
+
+        //Log all message in info queue when in debug
+#ifdef _DEBUG
+        DumpDebugMessages();
+#endif // _DEBUG
+
+        HRESULT c = Graphics::g_Device->GetDeviceRemovedReason();
+        if (Graphics::g_Device->GetDeviceRemovedReason() != S_OK) 
+            switch (static_cast<UINT>(c))
+            {
+            case DXGI_ERROR_DEVICE_HUNG:            
+                throw std::runtime_error("DXGI_ERROR_DEVICE_HUNG");
+                break;
+
+            case DXGI_ERROR_DEVICE_REMOVED:         
+                throw std::runtime_error("DXGI_ERROR_DEVICE_REMOVED");
+                break;
+
+            case DXGI_ERROR_DEVICE_RESET:        
+                throw std::runtime_error("DXGI_ERROR_DEVICE_RESET");
+                break;
+
+            case DXGI_ERROR_DRIVER_INTERNAL_ERROR:  
+                throw std::runtime_error("DXGI_ERROR_DRIVER_INTERNAL_ERROR");
+                break;
+
+            case DXGI_ERROR_INVALID_CALL:           
+                throw std::runtime_error("DXGI_ERROR_INVALID_CALL");
+                break;
+            }        
+        else throw HrException(hr);
     }
 }
+#pragma optimize( "", on)
 
 inline void ThrowIfFailed(HRESULT hr, const wchar_t* msg)
 {

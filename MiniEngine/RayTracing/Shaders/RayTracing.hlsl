@@ -18,7 +18,7 @@
 // Input data
 RaytracingAccelerationStructure Scene : register(t0, space0);
 ByteAddressBuffer Indices :             register(t1, space0);
-StructuredBuffer<Vertex> Vertices :     register(t1, space0);
+StructuredBuffer<Vertex> Vertices :     register(t2, space0);
 
 // Outputs
 RWTexture2D<float4> RenderTarget :      register(u0);

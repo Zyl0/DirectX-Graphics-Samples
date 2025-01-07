@@ -338,7 +338,7 @@ struct SceneGeometry
         Cube
     };
 
-    SceneGeometry(RTBuffersDescriptorHeap& HeapDesciptor, Preset preset = Preset::HelloWorld)
+    SceneGeometry(RTBuffersDescriptorHeap& HeapDesciptor, Preset preset = Preset::Cube)
     {
         Index* Indices = nullptr;
         size_t IndicesSize = 0;
@@ -363,8 +363,8 @@ struct SceneGeometry
         AllocateUploadBuffer(g_Device, Vertices, VerticesSize, &m_vertexBuffer.resource);
         AllocateUploadBuffer(g_Device, Indices, IndicesSize, &m_indexBuffer.resource);
 
-        UINT descriptorIndexIB = CreateBufferSRV(HeapDesciptor, &m_indexBuffer, IndicesSize / 4, 0);
-        UINT descriptorIndexVB = CreateBufferSRV(HeapDesciptor, &m_vertexBuffer, VerticesSize, sizeof(SceneGeometry::Vertex));
+        UINT descriptorIndexIB = CreateBufferSRV(HeapDesciptor, &m_indexBuffer, (IndicesSize / sizeof(SceneGeometry::Index)) / 4, 0); //todo investigate on why the / 4 in the sample code
+        UINT descriptorIndexVB = CreateBufferSRV(HeapDesciptor, &m_vertexBuffer, VerticesSize / sizeof(SceneGeometry::Vertex), sizeof(SceneGeometry::Vertex));
         ThrowIfFalse(descriptorIndexVB == descriptorIndexIB + 1, L"Vertex Buffer descriptor index must follow that of Index Buffer descriptor index!");
     }
 
@@ -504,6 +504,8 @@ struct RTAccelerationSturctures
 {
     RTAccelerationSturctures(SceneGeometry& Geometry, DXRInterface& DxrInterface)
     {
+        GraphicsContext& gfxContext = GraphicsContext::Begin(L"Acceleration structure creation");
+
         D3D12_RAYTRACING_GEOMETRY_DESC geometryDesc = {};
         geometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
         geometryDesc.Triangles.IndexBuffer = Geometry.m_indexBuffer.resource->GetGPUVirtualAddress();
@@ -523,25 +525,36 @@ struct RTAccelerationSturctures
 
         // Get required sizes for an acceleration structure.
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS topLevelInputs = {};
+
+        // Top level BVH settup
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC topLevelBuildDesc = {};
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& topLevelInputs = topLevelBuildDesc.Inputs;
         topLevelInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
         topLevelInputs.Flags = buildFlags;
         topLevelInputs.NumDescs = 1;
         topLevelInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+        topLevelInputs.pGeometryDescs = nullptr;    //todo find how to fill the top level with instances
 
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO topLevelPrebuildInfo = {};
         DxrInterface.m_dxrDevice->GetRaytracingAccelerationStructurePrebuildInfo(&topLevelInputs, &topLevelPrebuildInfo);
         ThrowIfFalse(topLevelPrebuildInfo.ResultDataMaxSizeInBytes > 0);
 
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO bottomLevelPrebuildInfo = {};
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottomLevelInputs = topLevelInputs;
+        // Bottom level BVH settup
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bottomLevelBuildDesc = {};
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& bottomLevelInputs = bottomLevelBuildDesc.Inputs;
+        bottomLevelInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        bottomLevelInputs.Flags = buildFlags;
+        bottomLevelInputs.NumDescs = 1;
         bottomLevelInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         bottomLevelInputs.pGeometryDescs = &geometryDesc;
+
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO bottomLevelPrebuildInfo = {};
         DxrInterface.m_dxrDevice->GetRaytracingAccelerationStructurePrebuildInfo(&bottomLevelInputs, &bottomLevelPrebuildInfo);
         ThrowIfFalse(bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes > 0);
 
         ComPtr<ID3D12Resource> scratchResource;
-        AllocateUAVBuffer(g_Device, max(topLevelPrebuildInfo.ScratchDataSizeInBytes, bottomLevelPrebuildInfo.ScratchDataSizeInBytes), &scratchResource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"ScratchResource");
+        //AllocateUAVBuffer(g_Device, 128, scratchResource.GetAddressOf(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"ScratchResource");
+        AllocateUAVBuffer(g_Device, max(topLevelPrebuildInfo.ScratchDataSizeInBytes, bottomLevelPrebuildInfo.ScratchDataSizeInBytes), scratchResource.GetAddressOf(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"ScratchResource");
 
         // Allocate resources for acceleration structures.
         // Acceleration structures can only be placed in resources that are created in the default heap (or custom heap equivalent). 
@@ -553,8 +566,8 @@ struct RTAccelerationSturctures
         {
             D3D12_RESOURCE_STATES initialResourceState = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
 
-            AllocateUAVBuffer(g_Device, bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes, &m_bottomLevelAccelerationStructure, initialResourceState, L"BottomLevelAccelerationStructure");
-            AllocateUAVBuffer(g_Device, topLevelPrebuildInfo.ResultDataMaxSizeInBytes, &m_topLevelAccelerationStructure, initialResourceState, L"TopLevelAccelerationStructure");
+            AllocateUAVBuffer(g_Device, bottomLevelPrebuildInfo.ResultDataMaxSizeInBytes, m_bottomLevelAccelerationStructure.GetAddressOf(), initialResourceState, L"BottomLevelAccelerationStructure");
+            AllocateUAVBuffer(g_Device, topLevelPrebuildInfo.ResultDataMaxSizeInBytes, m_topLevelAccelerationStructure.GetAddressOf(), initialResourceState, L"TopLevelAccelerationStructure");
         }
 
         // Create an instance desc for the bottom-level acceleration structure.
@@ -566,23 +579,17 @@ struct RTAccelerationSturctures
         AllocateUploadBuffer(g_Device, &instanceDesc, sizeof(instanceDesc), &instanceDescs, L"InstanceDescs");
 
         // Bottom Level Acceleration Structure desc
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bottomLevelBuildDesc = {};
         {
-            bottomLevelBuildDesc.Inputs = bottomLevelInputs;
             bottomLevelBuildDesc.ScratchAccelerationStructureData = scratchResource->GetGPUVirtualAddress();
             bottomLevelBuildDesc.DestAccelerationStructureData = m_bottomLevelAccelerationStructure->GetGPUVirtualAddress();
         }
 
         // Top Level Acceleration Structure desc
-        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC topLevelBuildDesc = {};
         {
-            topLevelInputs.InstanceDescs = instanceDescs->GetGPUVirtualAddress();
-            topLevelBuildDesc.Inputs = topLevelInputs;
             topLevelBuildDesc.DestAccelerationStructureData = m_topLevelAccelerationStructure->GetGPUVirtualAddress();
             topLevelBuildDesc.ScratchAccelerationStructureData = scratchResource->GetGPUVirtualAddress();
+            topLevelBuildDesc.Inputs.InstanceDescs = instanceDescs->GetGPUVirtualAddress();
         }
-
-        GraphicsContext& gfxContext = GraphicsContext::Begin(L"Acceleration structure creation");
 
         auto BuildAccelerationStructure = [&](auto* raytracingCommandList)
         {
