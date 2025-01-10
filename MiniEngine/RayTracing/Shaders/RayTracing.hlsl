@@ -42,15 +42,22 @@ bool IsInsideViewport(float2 p, Viewport viewport)
 void MyRaygenShader()
 {
     float2 lerpValues = (float2)DispatchRaysIndex() / (float2)DispatchRaysDimensions();
+    
+    float u = lerp(g_rayGenCB.viewport.left, g_rayGenCB.viewport.right, lerpValues.x);
+    float v = lerp(g_rayGenCB.viewport.top, g_rayGenCB.viewport.bottom, lerpValues.y);
+    
+    // Unproject the pixel coordinate into a ray.
+    float4 rayZNear = mul(float4(u, v, 1, 1), g_rayGenCB.ProjectedSpaceToWorld);
+    rayZNear.xyz /= rayZNear.w;
+    
+    float4 rayZFar = mul(float4(u, v, -1, 1), g_rayGenCB.ProjectedSpaceToWorld);
+    rayZFar.xyz /= rayZFar.w;
+    
+    //float distance = length(world.xyz - originH.xyz);
+    float3 rayDir = normalize(rayZFar.xyz - rayZNear.xyz);
+    float3 origin = rayZNear.xyz;//g_rayGenCB.CameraPosition;
 
-    // Orthographic projection since we're raytracing in screen space.
-    float3 rayDir = float3(0, 0, 1);
-    float3 origin = float3(
-        lerp(g_rayGenCB.viewport.left, g_rayGenCB.viewport.right, lerpValues.x),
-        lerp(g_rayGenCB.viewport.top, g_rayGenCB.viewport.bottom, lerpValues.y),
-        0.0f);
-
-    if (IsInsideViewport(origin.xy, g_rayGenCB.stencil))
+    if (IsInsideViewport(float2(u, v), g_rayGenCB.stencil))
     {
         // Trace the ray.
         // Set the ray's extents.
@@ -60,9 +67,21 @@ void MyRaygenShader()
         // Set TMin to a non-zero small value to avoid aliasing issues due to floating - point errors.
         // TMin should be kept small to prevent missing geometry at close contact areas.
         ray.TMin = 0.001;
-        ray.TMax = 10000.0;
+        ray.TMax = 1000.0;
         RayPayload payload = { float4(0, 0, 0, 0) };
-        TraceRay(Scene, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, ~0, 0, 1, 0, ray, payload);
+        TraceRay(
+            Scene,                                  // Acceleration structure
+        
+            // Flags
+            //RAY_FLAG_NONE,                           
+            RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
+        
+            ~0,                                     // InstanceInclusionMask
+            0,                                      // RayContributionToHitGroupIndex
+            1,                                      // MultiplierForGeometryContributionToHitGroupIndex
+            0,                                      // MissShaderIndex
+            ray, 
+            payload);
 
         // Write the raytraced color to the output texture.
         RenderTarget[DispatchRaysIndex().xy] = payload.color;
@@ -70,7 +89,7 @@ void MyRaygenShader()
     else
     {
         // Render interpolated DispatchRaysIndex outside the stencil window
-        RenderTarget[DispatchRaysIndex().xy] = float4(lerpValues, 0, 1);
+        RenderTarget[DispatchRaysIndex().xy] = float4(rayDir * 0.5f + 0.5f, 1);
     }
 }
 

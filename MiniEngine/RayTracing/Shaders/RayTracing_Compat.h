@@ -10,6 +10,7 @@ struct Viewport
 };
 
 #ifdef HLSL
+typedef float2 vec2;
 typedef float3 vec3;
 typedef float4 vec4;
 typedef float3x3 matrix3;
@@ -17,7 +18,7 @@ typedef float4x4 matrix4;
 
 #else
 #include "VectorMath.h"
-
+typedef struct alignas(16) Vector2 { float x, y; } vec2;
 typedef Math::Vector3   vec3;
 typedef Math::Vector4   vec4;
 typedef Math::Matrix3   matrix3;

@@ -12,6 +12,7 @@
 
 #include "Camera.h"
 #include "CameraController.h"
+#include "RBCamera.h"
 
 #include "TemporalEffects.h"
 #include "MotionBlur.h"
@@ -110,7 +111,7 @@ struct RTRootSignatures
         enum Value {
             OutputViewSlot = 0,
             AccelerationStructureSlot,
-            IndexBufferSlot,
+            SceneConstantSlot,
             VertexBufferSlot,
             Count
         };
@@ -127,14 +128,15 @@ struct RTRootSignatures
     {
         // Global Root Signature
         {
-            CD3DX12_DESCRIPTOR_RANGE UAVDescriptor;
-            UAVDescriptor.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+            CD3DX12_DESCRIPTOR_RANGE ranges[2]; // Perfomance TIP: Order from most frequent to least frequent.
+            ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);  // 1 output texture
+            ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 1);  // 2 static index and vertex buffers.
 
             CD3DX12_ROOT_PARAMETER rootParameters[GlobalRootSignatureParams::Count];
-            rootParameters[GlobalRootSignatureParams::OutputViewSlot].InitAsDescriptorTable(1, &UAVDescriptor);
+            rootParameters[GlobalRootSignatureParams::OutputViewSlot].InitAsDescriptorTable(1, &ranges[0]);
             rootParameters[GlobalRootSignatureParams::AccelerationStructureSlot].InitAsShaderResourceView(0);
-            rootParameters[GlobalRootSignatureParams::IndexBufferSlot].InitAsShaderResourceView(1, 0);
-            rootParameters[GlobalRootSignatureParams::VertexBufferSlot].InitAsShaderResourceView(2, 0);
+            rootParameters[GlobalRootSignatureParams::SceneConstantSlot].InitAsConstantBufferView(0);
+            rootParameters[GlobalRootSignatureParams::VertexBufferSlot].InitAsDescriptorTable(1, &ranges[1]);;
 
             CD3DX12_ROOT_SIGNATURE_DESC globalRootSignatureDesc(ARRAYSIZE(rootParameters), rootParameters);
             SerializeAndCreateRaytracingRootSignature(globalRootSignatureDesc, &m_raytracingGlobalRootSignature);
@@ -143,7 +145,7 @@ struct RTRootSignatures
         // Local Root Signature
         {
             CD3DX12_ROOT_PARAMETER rootParameters[LocalRootSignatureParams::Count];
-            rootParameters[LocalRootSignatureParams::ViewportConstantSlot].InitAsConstants(SizeOfInUint32(RayGenCB), 0, 0);
+            rootParameters[LocalRootSignatureParams::ViewportConstantSlot].InitAsConstants(SizeOfInUint32(RayGenCB), 1);
 
             CD3DX12_ROOT_SIGNATURE_DESC localRootSignatureDesc(ARRAYSIZE(rootParameters), rootParameters);
             localRootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
@@ -363,7 +365,7 @@ struct SceneGeometry
         AllocateUploadBuffer(g_Device, Vertices, VerticesSize, &m_vertexBuffer.resource);
         AllocateUploadBuffer(g_Device, Indices, IndicesSize, &m_indexBuffer.resource);
 
-        UINT descriptorIndexIB = CreateBufferSRV(HeapDesciptor, &m_indexBuffer, (IndicesSize / sizeof(SceneGeometry::Index)) / 4, 0); //todo investigate on why the / 4 in the sample code
+        UINT descriptorIndexIB = CreateBufferSRV(HeapDesciptor, &m_indexBuffer, (IndicesSize / sizeof(SceneGeometry::Index)) / 4 /*/ 4*/, 0); //todo investigate on why the / 4 in the sample code requiered by the cube sample
         UINT descriptorIndexVB = CreateBufferSRV(HeapDesciptor, &m_vertexBuffer, VerticesSize / sizeof(SceneGeometry::Vertex), sizeof(SceneGeometry::Vertex));
         ThrowIfFalse(descriptorIndexVB == descriptorIndexIB + 1, L"Vertex Buffer descriptor index must follow that of Index Buffer descriptor index!");
     }
@@ -411,8 +413,6 @@ private:
 
     void GetCubeData(Index*& Indices, size_t& IndicesSize, SceneGeometry::Vertex*& Vertices, size_t& VerticesSize, size_t& FaceVertexCount)
     {
-        static constexpr float depthValue = 0.5;
-        static constexpr float offset = 0.002f;
         static Index indices[] =
         {
             3,1,0,
@@ -748,12 +748,11 @@ struct RTSceneConstantBuffer
         uint8_t alignmentPadding[D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT - sizeof(Buffer)];
     };
 
-    RTSceneConstantBuffer()
+    RTSceneConstantBuffer(Buffer&& SceneRawBuffer)
     {
         // Create the constant buffer memory and map the CPU and GPU addresses
         const D3D12_HEAP_PROPERTIES uploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
 
-        // Allocate one constant buffer per frame, since it gets updated every frame.
         size_t cbSize = sizeof(AlignedBuffer);
         const D3D12_RESOURCE_DESC constantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(cbSize);
 
@@ -769,6 +768,8 @@ struct RTSceneConstantBuffer
         // We don't unmap this until the app closes. Keeping buffer mapped for the lifetime of the resource is okay.
         CD3DX12_RANGE readRange(0, 0);        // We do not intend to read from this resource on the CPU.
         ThrowIfFailed(m_Constants->Map(0, nullptr, reinterpret_cast<void**>(&m_mappedConstantData)));
+
+        m_mappedConstantData->constants = SceneRawBuffer;
     }
 
     ~RTSceneConstantBuffer()
@@ -819,8 +820,8 @@ struct RTOutputBuffer
 class RayTracing : public GameCore::IGameApp
 {
 public:
-
-    RayTracing()
+    RayTracing() : 
+        m_CameraController(new FlyingFPSCamera(m_Camera, Math::Vector3(0,1,0)))
     {
     }
 
@@ -834,8 +835,10 @@ private:
     void InitializeShaders();
 
 private:
-    Math::Camera Camera;
-    std::unique_ptr<CameraController> CameraController;
+    Math::Camera m_Camera;
+    std::unique_ptr<FlyingFPSCamera> m_CameraController;
+
+    FlyCamera m_RBCamera;
 
     DXRInterface* m_dxr = nullptr;
 
@@ -854,8 +857,6 @@ private:
     RTSceneConstantBuffer* m_rtSceneConstantBuffer = nullptr;
 
     RTOutputBuffer* m_rtOutputBuffer = nullptr;
-
-    SceneConstantBuffer m_RayGenCB;
 };
 
 CREATE_APPLICATION( RayTracing )
@@ -870,8 +871,21 @@ void RayTracing::Startup( void )
     PostEffects::EnableAdaptation = false;
     SSAO::Enable = true;
 
+    SceneConstantBuffer m_RayGenCB;
     m_RayGenCB.viewport = { -1.0f, -1.0f, 1.0f, 1.0f };
+    m_RayGenCB.stencil = { -1.0f, -1.0f, 1.0f, 1.0f };
+    //m_RayGenCB.stencil =  { -0.25f, -0.25f, 0.25f, 0.25f };
 
+    m_RBCamera.SetProjection(g_SceneColorBuffer.GetWidth(), g_SceneColorBuffer.GetHeight(), 90, 0.15f, 100.0f);
+    m_RBCamera.SetTranslation(-4.75, 0, 0);
+
+    //m_CameraController->SetHeadingPitchAndPosition(0, 0, Vector3(-2,0,0));
+
+    //m_Camera.SetPosition(Vector3(-1,0,0));
+    //m_Camera.SetRotation(Quaternion(0,0,0));
+    //m_Camera.SetLookDirection(Vector3(1, 0, 0), Vector3(0, 1, 0));
+    //m_Camera.Update();
+    
     // Setup your data
     m_dxr = new DXRInterface();
     m_rtRootSignatures = new RTRootSignatures(m_RayGenCB);
@@ -887,7 +901,7 @@ void RayTracing::Startup( void )
 
     m_rtShaderTables = new RTShaderTables(*m_rtPipelineStateObject);
 
-    m_rtSceneConstantBuffer = new RTSceneConstantBuffer();
+    m_rtSceneConstantBuffer = new RTSceneConstantBuffer(std::move(m_RayGenCB));
     m_rtOutputBuffer = new RTOutputBuffer(g_SceneColorBuffer.GetWidth(), g_SceneColorBuffer.GetHeight(), *m_rtBufferDescriptorHeap);
 
 }
@@ -905,11 +919,36 @@ void RayTracing::Cleanup( void )
     delete m_dxr;
 }
 
-void RayTracing::Update( float /*deltaT*/ )
+void RayTracing::Update( float deltaT )
 {
     ScopedTimer _prof(L"Update State");
 
-    // Update something
+    Math::Vector3 PositionDir(0, 0, 0);
+    float rotateDir = 0.0f;
+    const float speed = 1.5f;
+
+    if (GameInput::IsPressed(GameInput::kKey_up))
+        PositionDir.SetY(PositionDir.GetY().operator float() + 1);
+    if (GameInput::IsPressed(GameInput::kKey_down))
+        PositionDir.SetY(PositionDir.GetY().operator float() - 1);
+    if (GameInput::IsPressed(GameInput::kKey_w))
+        PositionDir.SetX(PositionDir.GetX().operator float() + 1);
+    if (GameInput::IsPressed(GameInput::kKey_s))
+        PositionDir.SetX(PositionDir.GetX().operator float() - 1);
+    if (GameInput::IsPressed(GameInput::kKey_a))
+        PositionDir.SetZ(PositionDir.GetZ().operator float() - 1);
+    if (GameInput::IsPressed(GameInput::kKey_d))
+        PositionDir.SetZ(PositionDir.GetZ().operator float() + 1);
+    PositionDir = PositionDir * deltaT * speed * 2.0f;
+    m_RBCamera.Translate(m_RBCamera.GetWorldRotation() * PositionDir);
+
+    if (GameInput::IsPressed(GameInput::kKey_q))
+        rotateDir += 1;
+    if (GameInput::IsPressed(GameInput::kKey_e))
+        rotateDir -= 1;
+    m_RBCamera.RotateRadians(0, rotateDir * M_PI * deltaT * speed / 5);
+
+    //m_CameraController->Update(deltaT);
 }
 
 void RayTracing::RenderScene( void )
@@ -920,6 +959,13 @@ void RayTracing::RenderScene( void )
     gfxContext.ClearColor(g_SceneColorBuffer);
     gfxContext.SetRenderTarget(g_SceneColorBuffer.GetRTV());
     gfxContext.SetViewportAndScissor(0, 0, g_SceneColorBuffer.GetWidth(), g_SceneColorBuffer.GetHeight());
+
+    // Update camera data
+    m_rtSceneConstantBuffer->m_mappedConstantData->constants.WorldToProjectedSpace = Transpose(m_RBCamera.Projection() * m_RBCamera.View());
+    m_rtSceneConstantBuffer->m_mappedConstantData->constants.ProjectedSpaceToWorld = Transpose(m_RBCamera.InverseView() * m_RBCamera.InverseProjection());
+    m_rtSceneConstantBuffer->m_mappedConstantData->constants.CameraPosition = m_RBCamera.GetWorldPosition();
+    m_rtSceneConstantBuffer->m_mappedConstantData->constants.CameraDirection = m_RBCamera.GetWorldDirection();
+
 
     // Dispatch rays draw call execution
     auto DispatchRays = [&](auto* commandList, auto* stateObject, auto* dispatchDesc)
@@ -954,9 +1000,11 @@ void RayTracing::RenderScene( void )
     D3D12_DISPATCH_RAYS_DESC dispatchDesc = {};
     CommandList->SetDescriptorHeaps(1, m_rtBufferDescriptorHeap->m_descriptorHeap.GetAddressOf());
     CommandList->SetComputeRootDescriptorTable(RTRootSignatures::GlobalRootSignatureParams::OutputViewSlot, m_rtOutputBuffer-> m_raytracingOutputResourceUAVGpuDescriptor);
-    CommandList->SetComputeRootDescriptorTable(RTRootSignatures::GlobalRootSignatureParams::IndexBufferSlot, m_rtScene->m_indexBuffer.gpuDescriptorHandle);
-    CommandList->SetComputeRootDescriptorTable(RTRootSignatures::GlobalRootSignatureParams::VertexBufferSlot, m_rtScene->m_vertexBuffer.gpuDescriptorHandle);
+    CommandList->SetComputeRootDescriptorTable(RTRootSignatures::GlobalRootSignatureParams::VertexBufferSlot, m_rtScene->m_indexBuffer.gpuDescriptorHandle);
     CommandList->SetComputeRootShaderResourceView(RTRootSignatures::GlobalRootSignatureParams::AccelerationStructureSlot, m_rtAccelerationStructures->m_topLevelAccelerationStructure->GetGPUVirtualAddress());
+
+    // Copy the updated scene constant buffer to GPU.
+    CommandList->SetComputeRootConstantBufferView(RTRootSignatures::GlobalRootSignatureParams::SceneConstantSlot, m_rtSceneConstantBuffer->m_Constants->GetGPUVirtualAddress());
 
     // Dispatch rays draw call
     DispatchRays(DxrCommandList.Get(), m_rtPipelineStateObject->m_dxrStateObject.Get(), &dispatchDesc);
@@ -970,7 +1018,7 @@ void RayTracing::RenderScene( void )
     CommandList->CopyResource(g_SceneColorBuffer.GetResource(), m_rtOutputBuffer->m_raytracingOutput.Get());
 
     D3D12_RESOURCE_BARRIER postCopyBarriers[2];
-    postCopyBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(g_SceneColorBuffer.GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+    postCopyBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(g_SceneColorBuffer.GetResource(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
     postCopyBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_rtOutputBuffer->m_raytracingOutput.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     CommandList->ResourceBarrier(ARRAYSIZE(postCopyBarriers), postCopyBarriers);

@@ -15,12 +15,21 @@
     <Filter Include="HeaderFiles">
       <UniqueIdentifier>{74f99163-a6ac-473a-935e-ebcf0fd40fd0}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\RB">
+      <UniqueIdentifier>{f126ad85-11dc-4f41-96cf-6b511fc9c8c8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="HeaderFiles\RB">
+      <UniqueIdentifier>{16fecdae-ae36-404d-83d3-6b1e32c6092f}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="pch.cpp" />
+    <ClCompile Include="RBCamera.cpp">
+      <Filter>Source Files\RB</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
@@ -32,6 +41,9 @@
     </ClInclude>
     <ClInclude Include="DXRaytracingHelper.h">
       <Filter>HeaderFiles</Filter>
+    </ClInclude>
+    <ClInclude Include="RBCamera.h">
+      <Filter>HeaderFiles\RB</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
